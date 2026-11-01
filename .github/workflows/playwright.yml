@@ -1,0 +1,63 @@
+name: Playwright Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 18 * * *' # every day at 18:00 UTC = 02:00 in Manila
+  workflow_dispatch:
+
+jobs:
+  test:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    env:
+      # The throwaway ERPNext this job starts. Its password is public, so it needs no secret.
+      ERP_URL: http://localhost:8080
+      ERP_ADMIN_USER: Administrator
+      ERP_ADMIN_PASSWORD: admin
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start ERPNext
+        run: docker compose -f docker/compose.yml up -d
+      - name: Wait for ERPNext to create its site
+        run: docker compose -f docker/compose.yml wait create-site
+      - name: Wait for the website
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/api/method/ping; then exit 0; fi
+            sleep 5
+          done
+          echo "ERPNext did not answer within 5 minutes"
+          docker compose -f docker/compose.yml logs backend frontend
+          exit 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run tests
+        run: npx playwright test
+
+      - uses: actions/upload-pages-artifact@v5
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        with:
+          path: playwright-report
+
+  publish-report:
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
